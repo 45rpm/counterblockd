@@ -9,8 +9,10 @@ import operator
 import logging
 import copy
 import uuid
+import socket
 import urllib
 import functools
+import md5
 
 from logging import handlers as logging_handlers
 from gevent import wsgi
@@ -1512,6 +1514,35 @@ def serve_api(mongo_db, redis_client):
         server.sendmail(from_email, config.SUPPORT_EMAIL, msg.as_string())
         return True
 
+    @dispatcher.add_method
+    def create_asset_file(asset, description, image, website, pgpsig):
+    #def create_asset_file():
+        #asset = 'test'
+        #description = 'test'
+        #image = 'test'
+        #website='test'
+        #pgpsig='test'
+        """This is support for the Broadcast Extended Info in Counterwallet. We find any existing revisions of the info for the asset in the database, increment the revision number by one and then save the new version to the DB"""
+        try:
+            json_str = json.dumps({'asset':asset,'description':description,'image':image, 'website':website,'pgpsig':pgpsig })
+
+            rev  = mongo_db.asset_files.find({'asset':asset}).count() + 1
+            record = {'asset':asset,'info':json_str,'revision':rev}
+            if not config.TESTNET:
+                base_url = 'https://'+socket.getfqdn()+'/assets/'
+            else:
+                base_url = 'https://'+socket.getfqdn()+'/t_assets/'
+            rem = 52 - len(base_url) # No. of characters available for a unique id
+            tag = md5.md5(asset+'-'+str(rev)).hexdigest()[:rem]
+            url = base_url + tag
+            record['tag'] = tag
+            mongo_db.asset_files.insert(record)
+            return {'url':url}
+        except:
+            import traceback
+            return {'error':traceback.format_exc()}
+
+
     def _set_cors_headers(response):
         if config.RPC_ALLOW_CORS:
             response.headers['Access-Control-Allow-Origin'] = '*'
@@ -1640,7 +1671,16 @@ def serve_api(mongo_db, redis_client):
         response = flask.Response(rpc_response_json, 200, mimetype='application/json')
         _set_cors_headers(response)
         return response
-    
+
+    @app.route('/assets/<asset>')
+    @app.route('/t_assets/<asset>')
+    def serve_asset(asset):
+        doc = mongo_db.asset_files.find_one({'tag':asset})
+        if doc:
+            return flask.Response(doc['info'],200,mimetype='application/json')
+        else:
+            return flask.Response('Asset not found',404,mimetype='text/plain')
+
     #make a new RotatingFileHandler for the access log.
     api_logger = logging.getLogger("api_log")
     h = logging_handlers.RotatingFileHandler(os.path.join(config.DATA_DIR, "api.access.log"), 'a', API_MAX_LOG_SIZE, API_MAX_LOG_COUNT)
